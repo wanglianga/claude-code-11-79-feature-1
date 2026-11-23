@@ -31,6 +31,7 @@ const navGroups = [
     items: [
       { to: '/revocation', label: 'Withdrawal', title: 'Withdrawal propagation' },
       { to: '/recovery', label: 'Recovery', title: 'Recovery & quarantine' },
+      { to: '/proof', label: 'Proof chain', title: 'Consent material proof chain workbench' },
       { to: '/audit', label: 'Audit trail', title: 'Audit trail' }
     ]
   }

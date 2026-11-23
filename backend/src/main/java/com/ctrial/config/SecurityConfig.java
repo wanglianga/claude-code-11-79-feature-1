@@ -58,7 +58,7 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.POST, "/api/watermarks/**").hasAnyRole("CN_ANALYST", "ADMIN")
                         // consent + event ingestion restricted to admin in this demo
                         .requestMatchers(HttpMethod.POST, "/api/consents/**", "/api/events/**", "/api/protocols/**",
-                                "/api/approvals/**", "/api/rules/**").hasAnyRole("ADMIN", "SPONSOR")
+                                "/api/approvals/**", "/api/rules/**", "/api/proof/**").hasAnyRole("ADMIN", "SPONSOR")
                         .requestMatchers("/api/admin/**").hasRole("ADMIN")
                         // the SPA shell and its assets are public; the app gates itself on the /api calls
                         .requestMatchers(HttpMethod.GET, "/", "/index.html", "/assets/**", "/favicon.ico",

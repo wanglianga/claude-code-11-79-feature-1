@@ -4,6 +4,9 @@ import com.ctrial.model.*;
 import com.ctrial.model.Enums.*;
 import com.ctrial.repo.*;
 import com.ctrial.service.AuditService;
+import com.ctrial.service.CommitmentService;
+import com.ctrial.service.ProofChainService;
+import com.ctrial.service.SamplingPlannerService;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
@@ -13,6 +16,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.List;
 
 /**
  * Seeds the acceptance scenario. Instants are derived from a fixed epoch so the
@@ -50,13 +54,21 @@ public class DemoSeeder implements ApplicationRunner {
     private final DispositionRuleRepo ruleRepo;
     private final TieBreakRepo tieBreakRepo;
     private final ReceiptRepo receiptRepo;
+    private final ConsentTemplateRepo templateRepo;
+    private final SignatureWitnessRepo witnessRepo;
+    private final AttachmentVersionRepo attachmentRepo;
+    private final ProofChainService proofChain;
+    private final SamplingPlannerService planner;
+    private final CommitmentService commitment;
     private final AuditService audit;
     private final boolean seed;
 
     public DemoSeeder(StudyRepo studyRepo, SiteRepo siteRepo, SubjectRepo subjectRepo, ConsentRepo consentRepo,
                       ProtocolRepo protocolRepo, EventRepo eventRepo, WatermarkRepo watermarkRepo,
                       ApprovalRepo approvalRepo, DispositionRuleRepo ruleRepo, TieBreakRepo tieBreakRepo,
-                      ReceiptRepo receiptRepo, AuditService audit,
+                      ReceiptRepo receiptRepo, ConsentTemplateRepo templateRepo, SignatureWitnessRepo witnessRepo,
+                      AttachmentVersionRepo attachmentRepo, ProofChainService proofChain,
+                      SamplingPlannerService planner, CommitmentService commitment, AuditService audit,
                       @Value("${app.demo.seed-on-startup:true}") boolean seed) {
         this.studyRepo = studyRepo;
         this.siteRepo = siteRepo;
@@ -69,6 +81,12 @@ public class DemoSeeder implements ApplicationRunner {
         this.ruleRepo = ruleRepo;
         this.tieBreakRepo = tieBreakRepo;
         this.receiptRepo = receiptRepo;
+        this.templateRepo = templateRepo;
+        this.witnessRepo = witnessRepo;
+        this.attachmentRepo = attachmentRepo;
+        this.proofChain = proofChain;
+        this.planner = planner;
+        this.commitment = commitment;
         this.audit = audit;
         this.seed = seed;
     }
@@ -246,6 +264,8 @@ public class DemoSeeder implements ApplicationRunner {
         advance("SG-01", Domain.AE, 3, 3, 3, hour(11, 12));
         advance("SG-01", Domain.VISIT, 4, 4, 4, hour(13, 13));
 
+        seedProofChain(study, cn1, cn2, sg, a, b, c, d);
+
         audit.record("system:seed", "DEMO_SEEDED", "Study", study.getCode(),
                 "Acceptance scenario A/B/C/D seeded; analysis day 16 is the reference instant. "
                         + "No tie-break rule is registered, so withdrawal/correction races must be quarantined.");
@@ -340,5 +360,261 @@ public class DemoSeeder implements ApplicationRunner {
         w.setAnalysisAt(at);
         w.setUpdatedAt(Instant.now());
         watermarkRepo.save(w);
+    }
+
+    // ================= consent material proof chain demo =================
+
+    private static final String TH_CN_SIGNER = com.ctrial.common.Text.sha256("CN-SIGNER-CERT-001");
+    private static final String TH_SG_SIGNER = com.ctrial.common.Text.sha256("SG-SIGNER-CERT-001");
+    private static final String TH_CN_ROOT = com.ctrial.common.Text.sha256("CN-ROOT-CA");
+    private static final String TH_CN_ICA = com.ctrial.common.Text.sha256("CN-ICA-CA");
+    private static final String TH_SG_ROOT = com.ctrial.common.Text.sha256("SG-ROOT-CA");
+    private static final String TH_FOREIGN = com.ctrial.common.Text.sha256("UNKNOWN-FOREIGN-CA");
+    private static final String FIELDS_ADULT = "DEMOG,SIGNATURE_DATE,CONSENT_PURPOSES,REGION,HANDSET_ID,NURSE_REVIEW";
+    private static final String FIELDS_CHILD = "DEMOG,GUARDIAN_PROOF,SIGNATURE_DATE,CONSENT_PURPOSES,HANDSET_ID,NURSE_REVIEW";
+
+    private void seedProofChain(Study study, Site cn1, Site cn2, Site sg, Subject a, Subject b, Subject c, Subject d) {
+        Subject e5 = subjectRepo.save(new Subject("PSN-E5", cn1, "CN", "CHN-001-0021"));
+        Subject f6 = subjectRepo.save(new Subject("PSN-F6", cn2, "CN", "CHN-002-0014"));
+        Subject g7 = subjectRepo.save(new Subject("PSN-G7", cn2, "CN", "CHN-002-0015"));
+        Subject i9 = subjectRepo.save(new Subject("PSN-I9", cn2, "CN", "CHN-002-0019"));
+
+        // ---- template registry: publication intervals per centre/language/age band/revision ----
+        template("TPL-CN01-ADULT-V10", "CN-01", "zh-CN", "ADULT", "v1.0", "ICF 成人版 v1.0（已撤销）",
+                day(-5), day(2), TemplateStatus.REVOKED, day(2), FIELDS_ADULT,
+                "Revoked after a field-summary defect; never selectable for new signatures.");
+        template("TPL-CN01-ADULT-V12", "CN-01", "zh-CN", "ADULT", "v1.2", "ICF 成人版 v1.2",
+                day(1), day(14), TemplateStatus.SUPERSEDED, null, FIELDS_ADULT,
+                "Closed when v2.0 opened; signatures inside [D1,D14) remain governed by this interval.");
+        template("TPL-CN01-ADULT-V20", "CN-01", "zh-CN", "ADULT", "v2.0", "ICF 成人版 v2.0（影像修订）",
+                day(14), null, TemplateStatus.PUBLISHED, null,
+                FIELDS_ADULT + ",IMAGING_ADC,IMAGING_TUMOR_VOL",
+                "Adds imaging fields; only valid from day 14.");
+        template("TPL-CN02-ADULT-V12", "CN-02", "zh-CN", "ADULT", "v1.2", "ICF 成人版 v1.2（武汉）",
+                day(1), null, TemplateStatus.PUBLISHED, null, FIELDS_ADULT, "Site-specific Wuhan interval.");
+        template("TPL-CN02-CHILD-V12", "CN-02", "zh-CN", "CHILD", "v1.2", "ICF 未成年监护人版 v1.2",
+                day(1), null, TemplateStatus.PUBLISHED, null, FIELDS_CHILD,
+                "Requires guardianship proof; minor signatures are counter-signed.");
+        template("TPL-SG01-ADULT-V12", "SG-01", "en", "ADULT", "v1.2", "ICF adult v1.2 (Singapore)",
+                day(1), null, TemplateStatus.PUBLISHED, null, FIELDS_ADULT, "English interval at the SEA site.");
+
+        String cnChain = TH_CN_ROOT + "," + TH_CN_ICA;
+        String sgChain = TH_SG_ROOT;
+
+        // ---- 1. clean, fully witnessed signatures (VERIFIED_SIGNATURE) ----
+        witness("SIG-A1-001", a, "TPL-CN01-ADULT-V12", "TAB-CN01-A2", "TAB-CN01-A2",
+                TH_CN_SIGNER, cnChain, AttestationState.TRUSTED,
+                hour(10, 10), hour(10, 11), hour(10, 14), hour(10, 10), false,
+                hash("SIG-A1-001-v1"), true, "NR-A1-001", null, null, true, null,
+                CommitmentScheme.APPENDABLE_TREE, null,
+                "Tablet online; nurse review completed the same morning.");
+        witness("SIG-B2-001", b, "TPL-SG01-ADULT-V12", "TAB-SG01-A1", "TAB-SG01-A1",
+                TH_SG_SIGNER, sgChain, AttestationState.TRUSTED,
+                hour(2, 11), hour(2, 12), hour(2, 13), hour(2, 11), false,
+                hash("SIG-B2-001-v1"), true, "NR-B2-001", null, null, true, null,
+                CommitmentScheme.APPENDABLE_TREE, null, "Initial grant at Singapore.");
+        witness("SIG-C3-001", c, "TPL-CN01-ADULT-V12", "TAB-CN01-A2", "TAB-CN01-A2",
+                TH_CN_SIGNER, cnChain, AttestationState.TRUSTED,
+                hour(1, 12), hour(1, 12), hour(1, 13), hour(1, 12), false,
+                hash("SIG-C3-001-v1"), true, "NR-C3-001", null, null, true, null,
+                CommitmentScheme.APPENDABLE_TREE, null, "Broad grant under v1.2.");
+        witness("SIG-D4-001", d, "TPL-CN02-ADULT-V12", "TAB-CN02-B7", "TAB-CN02-B7",
+                TH_CN_SIGNER, cnChain, AttestationState.TRUSTED,
+                hour(1, 14), hour(1, 15), hour(1, 15), hour(1, 14), false,
+                hash("SIG-D4-001-v1"), true, "NR-D4-001", null, null, true, hour(5, 11),
+                CommitmentScheme.APPENDABLE_TREE, null,
+                "Signed before randomisation (D5); device batch later fails attestation sampling.");
+
+        // ---- 2. offline signature predating template publication, trusted time from later sync ----
+        witness("SIG-E5-001", e5, "TPL-CN01-ADULT-V20", "TAB-CN01-A2", "TAB-CN01-A2",
+                TH_CN_SIGNER, cnChain, AttestationState.TRUSTED,
+                hour(12, 8), hour(12, 9), hour(15, 12), hour(13, 9), true,
+                hash("SIG-E5-001-v1"), true, "NR-E5-001", null, null, true, null,
+                CommitmentScheme.APPENDABLE_TREE, null,
+                "Tablet was offline on D12; its trusted clock was re-synchronised on D13, and the nurse"
+                        + " uploaded on D15. v2.0 is only published from D14, so the signing instant is pending —"
+                        + " upload time must never back-fill it.");
+
+        // ---- 3. two pseudonyms share one guardianship proof inside overlapping windows ----
+        String guardianRef = "GUARD-CN02-077";
+        String guardianHash = hash("GUARDIAN-DOC-077");
+        witness("SIG-F6-001", f6, "TPL-CN02-CHILD-V12", "TAB-CN02-B7", "TAB-CN02-B7",
+                TH_CN_SIGNER, cnChain, AttestationState.TRUSTED,
+                hour(6, 9), hour(6, 10), hour(6, 18), hour(6, 9), false,
+                hash("SIG-F6-001-v1"), true, "NR-F6-001", guardianRef, guardianHash, true, null,
+                CommitmentScheme.WITNESS_GRAPH, null, "Minor; guardian counter-signature.");
+        witness("SIG-G7-001", g7, "TPL-CN02-CHILD-V12", "TAB-CN02-B7", "TAB-CN02-B7",
+                TH_CN_SIGNER, cnChain, AttestationState.TRUSTED,
+                hour(6, 14), hour(6, 15), hour(7, 10), hour(6, 14), false,
+                hash("SIG-G7-001-v1"), true, "NR-G7-001", guardianRef, guardianHash, true, null,
+                CommitmentScheme.WITNESS_GRAPH, null,
+                "Different minor, same guardianship proof, overlapping window — identity-link anomaly, no merge.");
+
+        // ---- 4a. hash changed, certificate chain continuous + nursing note: supplement pending review ----
+        witness("SIG-C3-002", c, "TPL-CN01-ADULT-V20", "TAB-CN01-A2", "TAB-CN01-A2",
+                TH_CN_SIGNER, cnChain, AttestationState.TRUSTED,
+                hour(15, 9), hour(15, 10), hour(15, 16), hour(15, 9), false,
+                hash("SIG-C3-002-v1"), true, "NR-C3-002", null, null, true, null,
+                CommitmentScheme.APPENDABLE_TREE, null, "Re-consent under the imaging amendment.");
+        attach("SIG-C3-002", 2, hash("SIG-C3-002-v2"), TH_CN_SIGNER, cnChain, "NURSE",
+                "护理补录：扫描件裁切错误，重新扫描完整页；签名与证书未变。",
+                "Legitimate supplement: continuous chain, nursing explanation.");
+
+        // ---- 4b. duplicate upload: identical hash under a new version number ----
+        attach("SIG-C3-001", 2, hash("SIG-C3-001-v1"), TH_CN_SIGNER, cnChain, "NURSE",
+                "Tablet re-sent the same file after reconnect.", "Duplicate upload, counted once.");
+
+        // ---- 4c. hash changed with broken chain and no note: unverifiable replacement ----
+        witness("SIG-B2-002", b, "TPL-SG01-ADULT-V12", "TAB-SG01-A1", "TAB-SG01-A1",
+                TH_SG_SIGNER, sgChain, AttestationState.TRUSTED,
+                hour(13, 8), hour(13, 9), hour(13, 15), hour(13, 8), false,
+                hash("SIG-B2-002-v1"), true, "NR-B2-002", null, null, true, null,
+                CommitmentScheme.APPENDABLE_TREE, null, "Re-issued paperwork after the withdrawal.");
+        attach("SIG-B2-002", 2, hash("SIG-B2-002-v2-REPLACED"),
+                com.ctrial.common.Text.sha256("SG-SIGNER-CERT-002-UNSEEN"), TH_FOREIGN,
+                "UPLOADER", null, "Replacement arrives from an unknown CA with no explanation.");
+
+        // ---- 5. material without any local witness: pending, never withdrawal/auto-valid ----
+        witness("SIG-A1-002", a, "TPL-CN01-ADULT-V12", "TAB-CN01-A2", "TAB-CN01-A2",
+                TH_CN_SIGNER, cnChain, AttestationState.TRUSTED,
+                hour(12, 16), hour(12, 16), hour(13, 9), hour(12, 16), false,
+                hash("SIG-A1-002-v1"), false, null, null, null, false, null,
+                CommitmentScheme.APPENDABLE_TREE, null,
+                "Bulk-imported PDF with no local witness record and no nurse review; held pending.");
+
+        // ---- 6. device whose integrity statement already failed ----
+        witness("SIG-I9-001", i9, "TPL-CN02-ADULT-V12", "TAB-CN02-B7", "TAB-CN02-B7",
+                TH_CN_SIGNER, cnChain, AttestationState.FAILURE,
+                hour(8, 10), hour(8, 11), hour(8, 17), hour(8, 10), false,
+                hash("SIG-I9-001-v1"), true, "NR-I9-001", null, null, true, null,
+                CommitmentScheme.APPENDABLE_TREE, null,
+                "Terminal integrity statement FAILURE; same batch TAB-CN02-B7 as SIG-D4-001.");
+
+        // ---- compile + diff every material ----
+        proofChain.compileAll("system:seed");
+        proofChain.diffAll("system:seed");
+
+        // ---- appendable commitment trees (per centre) and witness graph ----
+        CommitmentBatch cn01 = commitment.fold("CN-01", null, "system:seed");
+        CommitmentBatch cn02 = commitment.fold("CN-02", null, "system:seed");
+        CommitmentBatch sg01 = commitment.fold("SG-01", null, "system:seed");
+        // revocations/re-uploads need an extra leaf-state index; the sealed root is untouched
+        commitment.annotateLeaf(sg01.getCode(), "SIG-B2-001", LeafState.REVOKED,
+                "global-analysis purpose withdrawn on D12; existence proof retained", "system:seed");
+        for (SignatureWitness w : witnessRepo.findAllByOrderBySignedAtAscSignatureNoAsc()) {
+            if (w.getCommitmentScheme() == CommitmentScheme.WITNESS_GRAPH
+                    && w.getCommitmentBatchCode() == null) {
+                commitment.buildGraph(w.getSignatureNo(), "system:seed");
+            }
+        }
+
+        // ---- sampling: routine plan at CN-01 and the failed batch at CN-02 ----
+        planner.createPlan(new SamplingPlannerService.PlanRequest(
+                "CN-01", "TAB-CN01-A2", null, "ROUTINE_PROOF_AUDIT", 0.95), "system:seed");
+        SamplingPlan batchPlan = planner.createPlan(new SamplingPlannerService.PlanRequest(
+                "CN-02", "TAB-CN02-B7", "TAB-CN02-B7", "BATCH_ATTESTATION_FAILURE", 0.95), "system:seed");
+        planner.recordResult(new SamplingPlannerService.SampleResultRequest(
+                batchPlan.getCode(), 2, 2, List.of("ATTESTATION_FAILURE"), true,
+                "Both sampled tablets report invalid integrity statements."), "system:seed");
+
+        audit.record("system:seed", "PROOF_CHAIN_SEEDED", "SignatureWitness", "*",
+                "Proof-chain scenario seeded: " + witnessRepo.count() + " witnesses, "
+                        + templateRepo.count() + " template intervals, batches "
+                        + batchRepoLabel(cn01, cn02, sg01)
+                        + "; sampling widened batch TAB-CN02-B7 and retained prior conclusions.");
+    }
+
+    private String batchRepoLabel(CommitmentBatch... batches) {
+        return java.util.Arrays.stream(batches).map(CommitmentBatch::getCode)
+                .reduce((x, y) -> x + "," + y).orElse("");
+    }
+
+    private void template(String code, String site, String language, String ageBand, String protocol,
+                          String title, Instant from, Instant to, TemplateStatus status, Instant revokedAt,
+                          String fields, String note) {
+        ConsentTemplate t = new ConsentTemplate();
+        t.setCode(code);
+        t.setSiteCode(site);
+        t.setLanguage(language);
+        t.setAgeBand(ageBand);
+        t.setProtocolVersion(protocol);
+        t.setTitle(title);
+        t.setPublishedFrom(from);
+        t.setPublishedTo(to);
+        t.setStatus(status);
+        t.setRevokedAt(revokedAt);
+        t.setFieldSummary(fields);
+        t.setFieldSummaryHash(com.ctrial.common.Text.sha256(fields));
+        t.setNote(note);
+        templateRepo.save(t);
+    }
+
+    @SuppressWarnings("ParameterNumber")
+    private void witness(String no, Subject s, String templateCode, String model, String batch,
+                         String signerThumb, String chain, AttestationState attestation,
+                         Instant signedAt, Instant witnessedAt, Instant uploadedAt, Instant trustedTimeAt,
+                         boolean resynced, String attachmentHash, boolean nurseReviewed, String nurseRef,
+                         String guardianRef, String guardianHash, boolean localWitness, Instant randomizedAt,
+                         CommitmentScheme scheme, String supplementNote, String note) {
+        SignatureWitness w = new SignatureWitness();
+        w.setSignatureNo(no);
+        w.setSubjectPseudonym(s.getPseudonym());
+        w.setLocalIdentityHandle(s.getLocalIdentity());
+        w.setSiteCode(s.getSite().getCode());
+        w.setTemplateCode(templateCode);
+        w.setSignerCertRef("CERT-LOCAL-" + no);
+        w.setSignerCertThumbprint(signerThumb);
+        w.setCertChainThumbprints(chain);
+        w.setDeviceModel(model);
+        w.setDeviceBatch(batch);
+        w.setDeviceIdRef("DEV-" + batch);
+        w.setAttestationState(attestation);
+        w.setAttestationDigest(com.ctrial.common.Text.sha256("ATTEST-" + no + "-" + attestation));
+        w.setSignedAt(signedAt);
+        w.setWitnessedAt(witnessedAt);
+        w.setUploadedAt(uploadedAt);
+        w.setTrustedTimeAt(trustedTimeAt);
+        w.setTrustedTimeResynced(resynced);
+        w.setAttachmentHash(attachmentHash);
+        w.setNurseReviewed(nurseReviewed);
+        w.setNurseReviewRef(nurseRef);
+        w.setGuardianProofRef(guardianRef);
+        w.setGuardianProofHash(guardianHash);
+        w.setLocalWitnessPresent(localWitness);
+        w.setRandomizedAt(randomizedAt);
+        w.setCommitmentScheme(scheme);
+        w.setNote(note);
+        witnessRepo.save(w);
+
+        AttachmentVersion v1 = new AttachmentVersion();
+        v1.setSignatureNo(no);
+        v1.setVersionNo(1);
+        v1.setHash(attachmentHash);
+        v1.setCertChainThumbprints(chain);
+        v1.setSignerCertThumbprint(signerThumb);
+        v1.setUploadedAt(uploadedAt);
+        v1.setUploadedByRef(nurseReviewed ? "NURSE" : "DEVICE");
+        v1.setSupplementNote(supplementNote);
+        v1.setNote("first witnessed attachment version");
+        attachmentRepo.save(v1);
+    }
+
+    private void attach(String no, int version, String hash, String signerThumb, String chain,
+                        String uploadedBy, String supplementNote, String note) {
+        AttachmentVersion v = new AttachmentVersion();
+        v.setSignatureNo(no);
+        v.setVersionNo(version);
+        v.setHash(hash);
+        v.setCertChainThumbprints(chain);
+        v.setSignerCertThumbprint(signerThumb);
+        v.setUploadedAt(Instant.now());
+        v.setUploadedByRef(uploadedBy);
+        v.setSupplementNote(supplementNote);
+        v.setNote(note);
+        attachmentRepo.save(v);
+    }
+
+    private static String hash(String seed) {
+        return com.ctrial.common.Text.sha256(seed);
     }
 }

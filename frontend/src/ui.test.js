@@ -8,6 +8,7 @@ import Eligibility from './views/Eligibility.vue'
 import Deliveries from './views/Deliveries.vue'
 import Watermarks from './views/Watermarks.vue'
 import ConsentProtocol from './views/ConsentProtocol.vue'
+import ProofChain from './views/ProofChain.vue'
 import { setAuth } from './lib/api.js'
 
 const HOST = process.env.API_HOST || '127.0.0.1'
@@ -110,5 +111,30 @@ describe('SPA renders against the live API', () => {
     const w = mountView(Watermarks)
     await wait(1200)
     expect(w.html()).toMatch(/CN-02/)
+  })
+
+  it('Proof chain workbench renders the three proof statuses and the five tabs', async () => {
+    const w = mountView(ProofChain)
+    await wait(1600)
+    const text = w.text()
+    expect(text).toContain('同意材料证明链工作台')
+    expect(text).toContain('模板时间线')
+    expect(text).toContain('材料证明链')
+    expect(text).toContain('版本差异')
+    expect(text).toContain('抽检覆盖')
+    expect(text).toContain('本地域核验结论')
+    // the default tab lists witnesses and the seeded mandatory scenarios
+    expect(text).toContain('SIG-E5-001')
+    expect(w.html()).toContain('IDENTITY_OR_TIME_PENDING')
+  })
+
+  it('Proof chain sampling tab shows plans and the widened batch result', async () => {
+    const w = mountView(ProofChain)
+    await wait(1200)
+    w.findAll('button.tab').find((b) => b.text() === '抽检覆盖').trigger('click')
+    await wait(1200)
+    const text = w.text()
+    expect(text).toContain('BATCH_ATTESTATION_FAILURE')
+    expect(text).toContain('TAB-CN02-B7')
   })
 })

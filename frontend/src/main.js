@@ -12,6 +12,7 @@ import Deliveries from './views/Deliveries.vue'
 import Revocation from './views/Revocation.vue'
 import Recovery from './views/Recovery.vue'
 import Audit from './views/Audit.vue'
+import ProofChain from './views/ProofChain.vue'
 import { getAuth } from './lib/api.js'
 
 const routes = [
@@ -25,6 +26,7 @@ const routes = [
   { path: '/deliveries', component: Deliveries, meta: { title: 'Snapshots & deliveries' } },
   { path: '/revocation', component: Revocation, meta: { title: 'Withdrawal propagation' } },
   { path: '/recovery', component: Recovery, meta: { title: 'Recovery & quarantine' } },
+  { path: '/proof', component: ProofChain, meta: { title: 'Consent material proof chain' } },
   { path: '/audit', component: Audit, meta: { title: 'Audit trail' } }
 ]
 

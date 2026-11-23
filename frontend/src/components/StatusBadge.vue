@@ -32,7 +32,24 @@ const map = {
   SCHEDULED: { cls: 'warn', label: 'Scheduled' },
   EXECUTED: { cls: 'ok', label: 'Executed' },
   RETAIN_RESTRICTED: { cls: 'local', label: 'Retain restricted' },
-  DESTROY_AFTER: { cls: 'bad', label: 'Destroy after' }
+  DESTROY_AFTER: { cls: 'bad', label: 'Destroy after' },
+  // proof chain
+  VERIFIED_SIGNATURE: { cls: 'ok', label: '可验证签署 Verified' },
+  MATERIAL_CORRUPTED: { cls: 'bad', label: '材料内容破损 Corrupted' },
+  IDENTITY_OR_TIME_PENDING: { cls: 'pend', label: '身份/时间待核 Pending' },
+  NOT_COMPILED: { cls: 'muted', label: 'Not compiled' },
+  LEGITIMATE_SUPPLEMENT: { cls: 'local', label: '合法补充 Supplement' },
+  UNVERIFIABLE_REPLACEMENT: { cls: 'bad', label: '不可验证替换' },
+  DUPLICATE_UPLOAD: { cls: 'warn', label: '重复上传' },
+  IDENTITY_LINK_ANOMALY: { cls: 'bad', label: '身份关联异常' },
+  PUBLISHED: { cls: 'ok', label: 'Published' },
+  SUPERSEDED: { cls: 'warn', label: 'Superseded' },
+  TRUSTED: { cls: 'ok', label: 'Trusted' },
+  TIME_RESYNCED: { cls: 'pend', label: 'Time resynced' },
+  FAILURE: { cls: 'bad', label: 'Attestation failure' },
+  REPLACED_PENDING: { cls: 'pend', label: 'Replaced pending' },
+  APPENDABLE_TREE: { cls: 'local', label: 'Commitment tree' },
+  WITNESS_GRAPH: { cls: 'warn', label: 'Witness graph' }
 }
 
 function meta() {

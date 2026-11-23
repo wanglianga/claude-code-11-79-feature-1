@@ -6,6 +6,16 @@ protocol-version envelope. It implements the consent ledger, protocol catalogue,
 evaluator, watermark/back-fill coordination, snapshot delivery compiler, withdrawal propagator and post-outage
 recovery verifier, together with the acceptance scenario for subjects A/B/C/D at analysis day 16.
 
+It also ships an independent **consent material proof-chain workbench (同意材料证明链工作台)**. Where the consent
+ledger's "agreed" flag only feeds eligibility, the workbench verifies the *provenance integrity* of each consent
+fact: a template registry with publication intervals per centre/language/age band/protocol revision, a signature
+witness ledger holding local-domain certificate thumbprints, terminal integrity statements, the three separate
+clocks (signed/witnessed/uploaded), attachment hashes, nurse review and guardianship proofs; a consistency
+compiler emitting the three proof statuses with their local evidence; a tamper diff-er over attachment versions;
+a sampling planner; and both bulk-proof constructions (appendable commitment tree and per-document witness
+graph). Identity plaintext never leaves the residency domain, and a material without local witness is never
+auto-downgraded to a withdrawal or to a valid consent.
+
 Stack: **Vue 3 (Vite)** · **Spring Boot 3.5 / JDK** · **PostgreSQL**. Single page app is bundled into the Spring
 Boot jar and served together with the REST API.
 
@@ -109,6 +119,64 @@ assert the two routes produce the same legal membership, verdicts and reason cod
 
 ---
 
+## 3a. Consent material proof-chain workbench
+
+The workbench (`/proof` in the console, API prefix `/api/proof`) is deliberately independent of the eligibility
+"agreed" flag. Five screens map to the five inspection artefacts:
+
+| Screen | Backend component | What it proves |
+|--------|-------------------|----------------|
+| 模板时间线 | `ConsentTemplate` + `ConsentTemplateRepo` | Publication intervals per **centre / language / subject age band / protocol revision**, field-summary hash and explicit revoked/superseded status. A replacement closes the old interval instead of overwriting it. |
+| 材料证明链 | `SignatureWitness`, `AttachmentVersion`, `ProofChainService` | Local-domain signer/CA thumbprints, terminal integrity statement, signed/witnessed/uploaded clocks, attachment hash, nurse review and guardianship proof. Only pseudonyms and local handles are stored — identity plaintext never leaves the residency domain. |
+| 版本差异 | `ProofChainService` diff-er + `CommitmentService` | Classifies every attachment-version pair as 合法补充 / 不可验证替换 / 重复上传, plus 身份关联异常 for shared guardianship evidence; hosts the appendable commitment tree with the extra leaf-state index for revocations/re-uploads. |
+| 抽检覆盖 | `SamplingPlannerService` | Minimum review sample per centre/device model/anomaly pattern (attribute sampling) and the distortion family the sample distinguishes; a failed batch attestation widens uncertainty and retains prior conclusion versions. |
+| 本地域核验结论 | `ProofConclusion` + `WitnessGraphEdge` | The three statuses with the exact local evidence each depends on, conclusion version history, and the guardian/device/nurse witness graph with broken edges. |
+
+### The three proof statuses and their rules
+
+* **VERIFIED_SIGNATURE (可验证签署)** — template interval covers the local signing instant, the certificate chain
+  and attestation match, the attachment hash is intact, nurse review and guardianship evidence are present.
+* **MATERIAL_CORRUPTED (材料内容破损)** — hash changed without a continuous chain/explanation, the certificate
+  chain breaks, or the terminal attestation failed.
+* **IDENTITY_OR_TIME_PENDING (身份或时间待核)** — signing time vs template publication unresolved, shared
+  guardianship link, missing nurse review, supplement awaiting review, no local witness, or batch-level
+  uncertainty. A material lacking local witness lands here: it is **never** auto-downgraded to a withdrawal and
+  **never** treated as a valid consent.
+
+### Mandatory inspection scenarios (all seeded and test-covered)
+
+1. **Offline signature earlier than template publication** (`SIG-E5-001`): the tablet's trusted time comes from a
+   later clock re-synchronisation, so the compiler emits `IDENTITY_OR_TIME_PENDING` with
+   `TEMPLATE_NOT_PUBLISHED_AT_SIGNING,TRUSTED_TIME_RESYNCED,UPLOAD_BACKFILL_FORBIDDEN`. The upload instant is
+   never used to back-fill the signing point.
+2. **Two pseudonyms, one guardianship proof, overlapping windows** (`SIG-F6-001` / `SIG-G7-001`): the diff-er
+   raises `IDENTITY_LINK_ANOMALY` naming both pseudonyms; the materials stay separate and are never merged.
+3. **Hash changed, chain continuous, nursing supplement note** (`SIG-C3-002` v1→v2): classified
+   `LEGITIMATE_SUPPLEMENT`; the original v1 material is retained and the new version is listed for review
+   (`SUPPLEMENT_PENDING_REVIEW`). The same table also demonstrates a `DUPLICATE_UPLOAD` (`SIG-C3-001`, identical
+   hash, counted once) and an `UNVERIFIABLE_REPLACEMENT` (`SIG-B2-002`, unknown CA, no note → corrupted).
+4. **Terminal batch attestation failure** (batch `TAB-CN02-B7`): the sampling result widens the proof-uncertainty
+   scope to all four batch materials, re-issues a batch-wide plan, and keeps the original audit conclusion
+   versions (rows are superseded, never deleted).
+
+### Bulk-proof scheme choice
+
+* **Appendable commitment tree (default for larger centres)** — signing hashes fold per centre/day into a
+  Merkle-style root (`/api/proof/batches/fold`) giving cheap batch existence proofs
+  (`/api/proof/batches/{code}/proof`). Revocation/re-upload keeps the original leaf hash and adds a leaf-state
+  index line; the sealed root never changes.
+* **Per-document cross-signature witness graph (smaller/forensic sites)** — guardian/device/nurse edges per
+  signature trace exactly where a relation breaks, at higher storage and batch-audit cost. Each witness elects
+  its scheme, so the two coexist by centre scale and on-site forensics needs.
+
+Key endpoints: `GET /api/proof/{summary,templates,witnesses,conclusions,diffs,plans,batches,graph}`,
+`POST /api/proof/{compile,diff}` (optional `?signatureNo=`), `POST /api/proof/witnesses`,
+`POST /api/proof/witnesses/{no}/versions`, `POST /api/proof/plans`, `POST /api/proof/plans/results`,
+`POST /api/proof/batches/{fold,annotate}`, `POST /api/proof/graph/build`. Write operations require ADMIN or
+SPONSOR; every GET is available to all five roles.
+
+---
+
 ## 4. The acceptance scenario (analysis day 16)
 
 Study day 1 = `2026-03-02T09:00Z`; analysis instant for day N = `23:00Z` on that day.
@@ -131,30 +199,38 @@ summary and digests stay intact for audit — the delivery is not pretended to h
 
 All commands below were executed in this workspace against a live instance. Results are quoted verbatim.
 
-### 5.1 Backend integration tests — 15/15 pass
+### 5.1 Backend integration tests — 26/26 pass
 
 ```bash
 cd backend && mvn test
 ```
 ```
-Tests run: 15, Failures: 0, Errors: 0, Skipped: 0
+Tests run: 15, Failures: 0, Errors: 0, Skipped: 0 -- in com.ctrial.AcceptanceRulesTest
+Tests run: 11, Failures: 0, Errors: 0, Skipped: 0 -- in com.ctrial.ProofChainRulesTest
+Tests run: 26, Failures: 0, Errors: 0, Skipped: 0
 BUILD SUCCESS
 ```
 Covers: A/B/C/D rules; intersection semantics; both reconstruction routes agreeing (read-only and persisted);
 stale-snapshot invalidation; transport dedupe; conflicting-duplicate quarantine; withdrawal/correction race
-quarantine; delivery projection has no identity fields and survives revocation as an intact summary.
+quarantine; delivery projection has no identity fields and survives revocation as an intact summary; **plus the
+proof-chain rules** — verified signatures with local evidence, offline/time-resync pending without back-fill,
+guardian identity-link anomaly without merging, legitimate supplement vs duplicate vs unverifiable replacement,
+no-local-witness pending (never withdrawal/auto-valid), batch attestation failure widening scope while retaining
+prior conclusion versions, Merkle inclusion proofs and witness-graph edges.
 
-### 5.2 Frontend render tests (live backend) — 7/7 pass
+### 5.2 Frontend render tests (live backend) — 9/9 pass
 
 ```bash
 cd frontend && npm run test        # vitest + happy-dom, mounts the real views against http://127.0.0.1:8080
 ```
 ```
 Test Files  1 passed (1)
-     Tests  7 passed (7)
+     Tests  9 passed (9)
 ```
 Asserts the Overview shows **15/15**, the Acceptance cards list A1/B1/C1/D2, the Eligibility pivot renders both
-planes and subject D as Pending, and the Consent / Deliveries / Watermarks views render without error.
+planes and subject D as Pending, and the Consent / Deliveries / Watermarks views render without error; the two
+new tests mount the proof-chain workbench, assert all five tabs and the three statuses, and open the sampling
+tab to confirm the widened `BATCH_ATTESTATION_FAILURE` result for batch `TAB-CN02-B7`.
 
 ### 5.3 End-to-end API acceptance (live jar)
 
@@ -173,6 +249,22 @@ planes and subject D as Pending, and the Consent / Deliveries / Watermarks views
 
 The pinned watermark string for day 16 is
 `CN-01:AE=15(src=15,ack=15); … CN-02:VISIT=12(src=12,ack=9)…` (the CN-02 analysis stays at 9).
+
+### 5.4 Proof-chain workbench end-to-end (live jar)
+
+| Call / check | Result |
+|------|--------|
+| `GET /api/proof/summary` | 11 materials: **3 verified, 1 corrupted, 7 pending**, 4 open diffs, 2 active plans, 3 commitment batches |
+| `GET /api/proof/witnesses` (statuses) | `SIG-E5-001` pending with `TEMPLATE_NOT_PUBLISHED_AT_SIGNING,TRUSTED_TIME_RESYNCED,UPLOAD_BACKFILL_FORBIDDEN`; `SIG-A1-002` pending `NO_LOCAL_WITNESS`; `SIG-B2-002` `MATERIAL_CORRUPTED`; `SIG-C3-002` pending `SUPPLEMENT_PENDING_REVIEW`; `SIG-D4-001` pending `BATCH_ATTESTATION_UNCERTAINTY` |
+| `GET /api/proof/diffs` | `SIG-F6-001 IDENTITY_LINK_ANOMALY (PSN-F6,PSN-G7)`; `SIG-C3-002 LEGITIMATE_SUPPLEMENT`; `SIG-B2-002 UNVERIFIABLE_REPLACEMENT` (chain break); `SIG-C3-001 DUPLICATE_UPLOAD` |
+| `GET /api/proof/plans` | Routine CN-01 plan (population 5, sample 5); CN-02 batch plan superseded by `SP-WIDEN-TAB-CN02-B7-3` covering all 4 batch signatures |
+| Sampling result `SR-1-CN-02` | `attestationFailure=true`, widened `SIG-F6-001,SIG-G7-001,SIG-D4-001,SIG-I9-001`, retained prior conclusion refs e.g. `SIG-D4-001:2(VERIFIED_SIGNATURE)` |
+| `GET /api/proof/batches` + inclusion proof | Three sealed Merkle batches; inclusion proof for `SIG-A1-001` returns `included=true, rootMatches=true` with 3 sibling hashes; leaf-state index records revoked/replaced leaves while the root hash is unchanged |
+| `GET /api/proof/graph` | 15 nodes / 6 edges for the two witness-graph signatures (guardian + device + nurse each), shared guardian visible, no broken edges in the seeded graph |
+| Identity residency | No proof endpoint response contains a local identity (`CHN-…` / `SGP-…` handles) — verified by grep over witnesses, detail, conclusions, templates, diffs and graph |
+| RBAC | `auditor` and `china` receive **403** on `POST /api/proof/**`; auditor GET works (200) |
+| Re-compile | `POST /api/proof/compile?signatureNo=SIG-A1-001` appends a new conclusion row; the previous row is retained with `superseded=true` |
+| Regression | `GET /api/acceptance?day=16` still reports **15/15 pass** — the workbench never mutates the consent ledger |
 
 ---
 
@@ -193,6 +285,11 @@ Open `http://localhost:8080` and sign in (the login screen lists the demo accoun
 * **Withdrawal** — propagate a recorded withdrawal, register disposition and tie-break rules, see executions.
 * **Recovery** — recovery reports (expand for per-domain digests), simulate a post-restore re-send, resolve
   quarantined races.
+* **Proof chain** — the consent material proof-chain workbench with five tabs: 模板时间线 (template registry
+  intervals), 材料证明链 (witness ledger with per-material evidence chain, attachment re-upload and inclusion
+  proof), 版本差异 (diff classifications and commitment-tree folding/leaf annotations), 抽检覆盖 (sampling
+  plans, result entry and batch-failure widening) and 本地域核验结论 (the three statuses with local evidence and
+  the guardian/device/nurse witness graph).
 * **Audit** — the append-only audit trail of every regulator-relevant transition.
 
 ### Try the headline flow
@@ -219,6 +316,15 @@ Open `http://localhost:8080` and sign in (the login screen lists the demo accoun
   the legal-member summary and digests are frozen and kept. Nothing claims the delivery never existed.
 * **Isolate, don't guess.** A withdrawal/correction race with equal effective instants and no registered
   tie-break rule is quarantined; it never silently picks a side.
+* **Provenance is a separate question from the consent flag.** The proof-chain workbench never writes the consent
+  ledger. "Agreed" may be true for eligibility while the material is still `MATERIAL_CORRUPTED` or
+  `IDENTITY_OR_TIME_PENDING`; missing local witness evidence causes a pending proof, never an automatic
+  withdrawal or an automatic valid consent.
+* **Clocks and hashes are evidence, not convenience.** Upload time never back-fills a signing instant; a hash
+  change with a continuous certificate chain and a nursing note is a retained supplement, while a broken chain is
+  corruption. All proof conclusions, diffs and sampling outcomes are append-only versions — re-evaluation
+  supersedes a row but never deletes it, and a commitment-tree root is immutable with leaf state carried in a
+  separate index.
 
 ---
 
@@ -227,14 +333,19 @@ Open `http://localhost:8080` and sign in (the login screen lists the demo accoun
 ```
 backend/
   src/main/java/com/ctrial/
-    model/        JPA entities + Enums (the rule vocabulary)
+    model/        JPA entities + Enums (the rule vocabulary), incl. ConsentTemplate, SignatureWitness,
+                  AttachmentVersion, ProofConclusion, DiffFinding, SamplingPlan/Result, CommitmentBatch,
+                  WitnessGraphEdge
+    repo/         Spring Data repositories for the proof-chain tables and the existing ledgers
     service/      EligibilityEngine (pure), EligibilityService, EligibilityRunService,
                   DeliveryService, RevocationService, RecoveryService, EventIngestService,
-                  StateService, AcceptanceService, AuditService
-    web/          ReadController, CommandController, SpaConfig
-    config/       SecurityConfig, DemoSeeder
-  src/test/java/com/ctrial/AcceptanceRulesTest.java
+                  StateService, AcceptanceService, AuditService, ProofChainService,
+                  SamplingPlannerService, CommitmentService
+    web/          ReadController, CommandController, ProofChainController, SpaConfig
+    config/       SecurityConfig, DemoSeeder (base scenario + proof-chain scenario)
+  src/test/java/com/ctrial/AcceptanceRulesTest.java, ProofChainRulesTest.java
 frontend/
-  src/            App, views/*, components/*, lib/api.js, lib/store.js, ui.test.js
+  src/            App, views/* (incl. ProofChain.vue), components/proof/* (five workbench tabs),
+                  lib/api.js, lib/store.js, ui.test.js
 Dockerfile, compose.yaml
 ```
